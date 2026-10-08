@@ -264,8 +264,8 @@ let uid = 1;
 const mkItem = o => Object.assign({id:uid++,kind:"item",cat:"材料",name:"",spec:"",qty:1,unit:"",list:null,cost:0,amount:null,remark:""},o);
 
 /* ---------- 区分の自動判定 ---------- */
-const KOJI_RE=/工事|工賃|作業|撤去|取付|取外|取り付|取り外|据付|配線|配管|入線|結線|施工|人工|手間|処分|運搬|搬入|搬出|諸経費|経費|交通|試験|調整|設置|養生|高所|夜間|足場|管理費|法定福利|出張|労務|技術料|点検/;
-function headingCat(name){ if(/工事|工費|労務|施工|経費/.test(name)) return "工事"; if(/材料|器具|機器|部材|資材|製品|商品/.test(name)) return "材料"; return null; }
+const KOJI_RE=/工事|工費|工賃|作業|撤去|取付|取外|取り付|取り外|据付|入線|結線|施工|人工|手間|処分|処理費|運搬|搬入|搬出|諸経費|経費|交通|試験|調整|設置|養生|高所|夜間|足場|管理費|法定福利|出張|労務|技術料|点検|手数料|使用料|許可|申請|手続|立会|分析|調査|損料|段取|警備|安全|仮設/;
+function headingCat(name){ if(/工事費|工費|労務|施工費|経費|作業費/.test(name)) return "工事"; if(/材料|器具|機器|部材|資材|製品|商品/.test(name)) return "材料"; return null; }
 function guessCat(name,spec,ctx){ if(KOJI_RE.test(name)) return "工事"; return ctx||"材料"; }
 
 /* ---------- state ---------- */
@@ -343,6 +343,8 @@ function refresh(){
     let flag="";
     if(it.warn) flag=`<span class="flag" title="写真の読み取りで、数量×単価と金額が合わなかった行です。単価を金額から計算し直しました">要確認</span>`;
     else if(it.amount!==null && it.amount!=="" && Math.abs(Number(it.qty||0)*Number(it.cost||0)-Number(it.amount))>1) flag=`<span class="flag" title="他社見積りの金額 ${yen(it.amount)} と 数量×単価 が合いません">要確認</span>`;
+    const s0=sellOf(it), c0=Number(it.cost||0);
+    if(c0>0 && s0<c0) flag+=`<span class="flag" title="端数処理で売値が仕入値より安くなっています。端数を「切り上げ」にするか、単価を直してください">原価割れ</span>`;
     tr.querySelector('[data-o="amt"]').innerHTML=yen(lineAmt(it))+flag;
   });
   const t=totals();
@@ -463,8 +465,15 @@ async function openPdf(file){
 }
 
 /* PDFの文字を「行」にまとめる */
-function pageRows(tc){
-  const its=tc.items.filter(t=>t.str&&t.str.trim()).map(t=>{ const h=Math.abs(t.transform[3])||Math.abs(t.height)||10; return {x0:t.transform[4],x1:t.transform[4]+(t.width||h*t.str.length),y:t.transform[5],h,s:t.str}; });
+function pageRows(tc,vp){
+  const U=window.pdfjsLib&&window.pdfjsLib.Util;
+  const its=tc.items.filter(t=>t.str&&t.str.trim()).map(t=>{
+    if(vp&&U){                                           // ページが回転していても、表示される向きの座標に直す
+      const m=U.transform(vp.transform,t.transform), h=Math.hypot(m[2],m[3])||10, horiz=Math.abs(m[0])>=Math.abs(m[1]);
+      const w=t.width||h*t.str.length;
+      return horiz ? {x0:m[4],x1:m[4]+w,y:-m[5],h,s:t.str} : {x0:m[4]-h,x1:m[4],y:-m[5],h,s:t.str,vert:true};
+    }
+    const h=Math.abs(t.transform[3])||Math.abs(t.height)||10; return {x0:t.transform[4],x1:t.transform[4]+(t.width||h*t.str.length),y:t.transform[5],h,s:t.str}; });
   its.sort((a,b)=>b.y-a.y||a.x0-b.x0);
   const rows=[];
   for(const it of its){ const r=rows[rows.length-1]; if(r && Math.abs(r.y-it.y)<=Math.max(2,Math.min(r.h,it.h)*0.45)) r.items.push(it); else rows.push({y:it.y,h:it.h,items:[it]}); }
@@ -527,7 +536,7 @@ async function ocrPdfPage(page){
 
 /* ---------- 読み取り（Claudeなし）：表の見出しを探して列を決める ---------- */
 const COLKEYS=[["no",["No.","NO.","No","NO","№","番号"]],["name",["品名","名称","品目","工事名","項目","内容","摘要","晶名","品各"]],["spec",["規格","型式","型番","仕様","品番","鍛格","規袼","現格"]],
-  ["qty",["数量","数墓"]],["unit",["単位"]],["list",["定価"]],["price",["単価","単偏"]],["amount",["金額","全額","金頷","全頷"]],["remark",["備考","備老"]]];
+  ["qty",["数量","数墓"]],["unit",["単位","呼称"]],["list",["定価"]],["price",["単価","単偏"]],["amount",["金額","全額","金頷","全頷"]],["remark",["備考","備老","摘要","摘　要"]]];
 const NUMCOL={no:1,qty:1,list:1,price:1,amount:1};
 function findHeader(row){
   const chars=[]; row.items.forEach(it=>{ const cs=[...it.s]; const w=(it.x1-it.x0)/Math.max(1,cs.length); cs.forEach((c,i)=>{ if(!/\s/.test(c)) chars.push({c,x0:it.x0+i*w,x1:it.x0+(i+1)*w}); }); });
@@ -593,28 +602,69 @@ function segments(row){
   return segs.map(a=>a.join("").trim()).filter(Boolean);
 }
 const DISC=/値引|値下|割引|出精|調整/;
+function splitNameCol(cols,rows){                    // 規格の欄がない表：名称欄の中で字下げされた部分を規格として扱う
+  if(cols.some(c=>c.key==="spec")) return; const nc=cols.find(c=>c.key==="name"); if(!nc) return;
+  const starts=[], hs=[];
+  rows.forEach(r=>{ let prev=null; r.items.forEach(it=>{ if(colOf(cols,it,false)!==nc) { prev=null; return; } const h=it.h||10; hs.push(h);
+    if(!prev || it.x0-prev.x1>h*1.5) starts.push(it.x0); prev=it; }); });
+  if(starts.length<4) return; hs.sort((a,b)=>a-b); const mh=hs[Math.floor(hs.length/2)];
+  starts.sort((a,b)=>a-b); const cl=[]; let cur=[starts[0]];
+  for(let i=1;i<starts.length;i++){ if(starts[i]-starts[i-1]>mh*2) { cl.push(cur); cur=[starts[i]]; } else cur.push(starts[i]); } cl.push(cur);
+  const big=cl.filter(c=>c.length>=Math.max(3,starts.length*0.15));
+  if(big.length>=2) nc.splitX=big[1][0]-mh*0.5;
+}
+function lineKind(cols,row){                          // 行の中身：数字があるか、名称・規格の文字があるか
+  let num=false, name=false, spec=false;
+  row.items.forEach(it=>{ const c=colOf(cols,it,row.grid); if(NUMCOL[c.key] && c.key!=="no" && NUMLIKE.test(it.s)) num=true;
+    if(c.key==="qty"||c.key==="unit"||c.key==="price"||c.key==="amount") { if(/\d|式/.test(it.s)) num=true; }
+    if(c.key==="name"){ if(c.splitX!==undefined && it.x0>=c.splitX) spec=true; else name=true; } if(c.key==="spec") spec=true; });
+  return {num,name,spec};
+}
+function attachNearby(table){                         // 数字のない行（上下に分かれた規格や名称）を、すぐ近くの数字の行にまとめる
+  for(let i=0;i<table.length;i++){
+    const [row,cols]=table[i]; if(row.grid||row.ocr||row.merged) continue;
+    const k=lineKind(cols,row); if(k.num||(!k.name&&!k.spec)) continue;
+    const h=(row.items[0]&&row.items[0].h)||10; let best=null, bd=Infinity;
+    for(const j of [i-2,i-1,i+1,i+2]){ const t=table[j]; if(!t||t[1]!==cols||t[0].pg!==row.pg||t[0].merged) continue;
+      const tk=lineKind(cols,t[0]); if(!tk.num) continue;
+      if(k.name ? (tk.name||tk.spec) : tk.spec) continue;
+      const d=Math.abs((t[0].y??0)-(row.y??0)); if(d<bd || (d===bd && j<i)){ bd=d; best=t[0]; } }
+    if(best && bd<=h*1.25){ best.items=best.items.concat(row.items.map(it=>Object.assign({},it))).sort((a,b)=>(b.y-a.y)>h*0.5?1:(a.y-b.y)>h*0.5?-1:a.x0-b.x0); row.merged=true; }
+  }
+}
 function parseRows(rows){
   // 1回目：見出し行を見つけて、表の行をまとめる
-  let cols=null; const pre=[], table=[]; const groups=new Map();
+  let cols=null; const pre=[], table=[]; const groups=new Map(), gidx=new Map();
+  let pg=0;
   for(const row0 of rows){
-    if(row0.page) continue; const row=prepRow(row0);
-    const h=findHeader(row); if(h){ cols=h; groups.set(h,[]); continue; }
+    if(row0.page){ pg++; continue; } const row=prepRow(row0); row.pg=pg;
+    const h=findHeader(row); if(h){ cols=h; groups.set(h,[]); gidx.set(h,gidx.size); continue; }
     if(!cols){ pre.push(row); continue; }
     table.push([row,cols]); groups.get(cols).push(row);
   }
-  for(const [c,rs] of groups) if(!rs.some(r=>r.grid)) alignNumbers(c,rs);
+  for(const [c,rs] of groups) if(!rs.some(r=>r.grid)){ alignNumbers(c,rs); splitNameCol(c,rs); }
+  attachNearby(table);
   // 2回目：行ごとに列へ振り分ける
   let ctx=null, taxSeen=false, subtotal=null, lastSub=null, nextNo=1; const items=[]; let anyOcr=false;
+  let pending=[], prevCols=null;                      // 複数行にまたがる品名・規格を一時的にためる
+  const flushPending=()=>{ for(const p of pending){ const last=items[items.length-1];
+      if(!p.name && last && last.kind==="item") last.spec=(last.spec?last.spec+" ":"")+p.spec;          // 規格欄だけの行は前の行の続き
+      else { const t=(p.name+" "+p.spec).trim(); ctx=headingCat(t)||ctx; items.push(mkItem({kind:"heading",name:t,grp:p.grp})); } }
+    pending=[]; };
   for(const [row,cols] of table){
     if(row.ocr) anyOcr=true;
+    if(row.merged) continue;
+    if(prevCols && prevCols!==cols) flushPending(); prevCols=cols; const grp=gidx.get(cols);
     const txt=rowText(row);
     const recIt={}; row.items.forEach(it=>{ const c=colOf(cols,it,row.grid); (recIt[c.key]=recIt[c.key]||[]).push(it); });
+    { const nc=cols.find(c=>c.key==="name"); if(nc && nc.splitX!==undefined && recIt.name){ const mv=recIt.name.filter(it=>it.x0>=nc.splitX); if(mv.length){ recIt.name=recIt.name.filter(it=>it.x0<nc.splitX); recIt.spec=(recIt.spec||[]).concat(mv); } } }
     if(recIt.no && cols.some(c=>c.key==="name")){                          // 番号欄に入った品名（例：「1LED」）を分ける
       const keep=[], move=[]; recIt.no.forEach(it=>{ if(NUMLIKE.test(it.s)) keep.push(it); else { const m=/^(\d{1,4})\s*(.+)$/.exec(it.s.trim());
         if(m){ keep.push(Object.assign({},it,{s:m[1]})); move.push(Object.assign({},it,{s:m[2]})); } else move.push(it); } });
       recIt.no=keep; if(move.length) recIt.name=move.concat(recIt.name||[]); }
     const J=k=>{ const a=recIt[k]||[]; let out="";                    // 隣り合う文字片はすき間なしでつなぐ
-      a.forEach((it,i)=>{ const gap=i?it.x0-a[i-1].x1:0, hh=it.h||10, prev=i?a[i-1].s.trim():"", cur=it.s.trim();
+      a.forEach((it,i)=>{ const hh=it.h||10, newLine=i&&it.y!==undefined&&a[i-1].y!==undefined&&Math.abs(it.y-a[i-1].y)>hh*0.5;
+        const gap=newLine?hh*9:(i?it.x0-a[i-1].x1:0), prev=i?a[i-1].s.trim():"", cur=it.s.trim();
         const asciiEdge=/[A-Za-z0-9.]$/.test(prev)&&/^[A-Za-z0-9φΦ]/.test(cur);
         const sp = i && (row.grid || (row.ocr ? (gap>hh*1.6 || (asciiEdge && gap>hh*0.4)) : gap>hh*0.15));
         out+=(sp?" ":"")+cur; });
@@ -641,15 +691,20 @@ function parseRows(rows){
     if(!unit && /一式/.test(name+spec)) unit="式";
     if(/\d/.test(unit)) unit=((unit.match(/[^\d\s.,\^▲△]{1,3}/)||[""])[0]);
     let price=parseNum(JN("price")), amount=parseNum(JN("amount")); const list=parseNum(JN("list"));
+    if(NUMLIKE.test(remark)) remark="";                                            // 備考欄の数字はページ計など
+    const amtTxt=J("amount"); if(amount===null && /別途|含む|サービス|込/.test(amtTxt)) remark=(remark?remark+" ":"")+amtTxt.replace(/[()（）]/g,"");
     if(price===null && amount===null && qty===null){
       const text=(name+" "+spec).trim(); if(!text) continue;
-      const last=items[items.length-1];
-      if(/^[【\[［(（■◆●□◇〈＜<]/.test(text) || !last || last.kind==="heading" || (headingCat(text)||/(設備|工事|器具|材料|機器|費)$/.test(text)) && text.length<=20){
-        ctx=headingCat(text)||ctx; items.push(mkItem({kind:"heading",name:text}));
-      } else { last.spec=(last.spec?last.spec+" ":"")+text; }
-      continue;
+      if(/^(№|No\.?)\s*\d+$|内\s*訳|明\s*細\s*書|見\s*積\s*書|^頁|ページ/.test(text.replace(/\s+/g," ").trim())) continue;   // ページ番号や表題
+      if(noNum!==null || /^[【\[［■◆●□◇〈＜<]/.test(text)){ flushPending(); ctx=headingCat(text)||ctx; items.push(mkItem({kind:"heading",name:text,grp})); continue; }
+      pending.push({name,spec,grp}); continue;                                       // 数字のない行は、次の数字の行とまとめる
     }
-    if(!name && !spec) continue;
+    if(!name && !spec){
+      if(!pending.length) continue;
+      name=pending.map(p=>p.name).filter(Boolean).join(" "); spec=pending.map(p=>p.spec).filter(Boolean).join(" "); pending=[];
+      if(!name){ name=spec; spec=""; }
+    } else flushPending();
+    if(/^[(（][^)）]*[)）]$/.test(name) && spec){ name=spec; spec=""; }              // 「(日中3日間工程)」のような添え書き
     if(DISC.test(name)){ if(price>0) price=-price; if(amount>0) amount=-amount; }   // 値引きはマイナス
     const base=subtotal??lastSub, big=amount??price;
     if(base && big && big>=base*0.95 && items.length>2) continue;                    // 小計のあとに出てくる大きな金額は合計行
@@ -657,9 +712,18 @@ function parseRows(rows){
     let q=qty, cost=price;
     if(cost===null && amount!==null){ if(q===null||q===0){ q=1; if(!unit) unit="式"; } cost=Math.round(amount/q*100)/100; }
     if(q===null) q=1;
-    items.push(mkItem({cat:guessCat(name,spec,ctx),name:name||spec,spec:name?spec:"",qty:q,unit,list,cost:cost??0,amount,remark,ocr:!!row.ocr}));
+    if(/\s/.test(unit.trim())){ const u=unit.trim().split(/\s+/); unit=u.pop(); spec=(spec?spec+" ":"")+u.join(" "); }   // 単位の欄に入った規格の文字
+    items.push(mkItem({cat:guessCat(name||spec,spec,ctx),name:name||spec,spec:name?spec:"",qty:q,unit,list,cost:cost??0,amount,remark,ocr:!!row.ocr,grp}));
   }
+  flushPending();
   if(subtotal===null) subtotal=lastSub;
+  // 表紙の集計表と内訳明細が両方ある場合は、表紙の集計を外す（二重に数えない）
+  if(gidx.size>=2){
+    const sumOf=arr=>arr.reduce((a,i)=>a+(i.kind==="item"?Number(i.qty||0)*Number(i.cost||0):0),0);
+    const g0=items.filter(i=>i.grp===0), rest=items.filter(i=>i.grp!==0);
+    const s0=sumOf(g0), sr=sumOf(rest), n0=g0.filter(i=>i.kind==="item").length, nr=rest.filter(i=>i.kind==="item").length;
+    if(n0 && nr>n0 && s0>0 && Math.abs(s0-sr)<=Math.max(1,s0*0.02)){ items.splice(0,items.length,...rest); }
+  }
   // 文字認識：数量×単価と金額が合わない行は、金額から単価を出し直す（合計と照らして良い方を採用）
   if(anyOcr){
     const tot=()=>items.reduce((a,i)=>a+(i.kind==="item"?Number(i.qty||0)*Number(i.cost||0):0),0);
@@ -687,13 +751,13 @@ function parseRows(rows){
     const t=t0.replace(/(\S)\s(?=\S)/g,(m,a)=>/[A-Za-z0-9]/.test(a)?m:a);   // 文字認識で入った余分な空白を除く
     const tt=toHalf(t), val=(m,i)=>(m[i]||"").replace(/^[\s:：]+/,"").trim()||next.trim();
     let m;
-    if(!vendor.company && CO.test(tt.replace(/\s/g,"")) && !/御中|様|殿/.test(tt) && tt.length<=40) vendor.company=t.replace(/^(見積元|会社名)[:：]?/,"").trim();
+    if(!vendor.company && CO.test(tt.replace(/\s/g,"")) && !/御中|様|殿|廣瀬電気/.test(tt) && !/御中|様|殿/.test(next) && tt.length<=40) vendor.company=t.replace(/^(見積元|会社名)[:：]?/,"").trim();
     if(!vendor.date && (m=/(令和|R)\s*(\d+|元)\s*年\s*(\d+)\s*月\s*(\d+)\s*日/.exec(tt))){ const y=m[2]==="元"?1:Number(m[2]); vendor.date=`${2018+y}/${Number(m[3])}/${Number(m[4])}`; }
     else if(!vendor.date && (m=/(20\d\d)\s*[年\/.\-]\s*(\d{1,2})\s*[月\/.\-]\s*(\d{1,2})/.exec(tt))) vendor.date=`${m[1]}/${Number(m[2])}/${Number(m[3])}`;
     if(!vendor.title && (m=/^(件\s*名|工\s*事\s*名|御?見積件名)\s*[:：]?(.*)$/.exec(tt))) vendor.title=val(m,2);
     if(!vendor.site && (m=/^(工事場所|施工場所|現場住所|現\s*場|場\s*所)\s*[:：]?(.*)$/.exec(tt))) vendor.site=val(m,2);
-    if(!vendor.person && !/様|殿/.test(tt) && (m=/^(担当者?|ご?担当)\s*[:：]\s*(.*)$/.exec(tt))) vendor.person=val(m,2);
-    if(!vendor.quoteNo && (m=/(見積番号|見積No\.?)\s*[:：]?\s*([A-Za-z0-9\-]+)/i.exec(tt))) vendor.quoteNo=m[2];
+    if(!vendor.person && !/様|殿/.test(tt+next) && (m=/^(担当者名?|ご?担当)\s*[:：]?\s*(.*)$/.exec(tt))) vendor.person=val(m,2);
+    if(!vendor.quoteNo && (m=/^(見積番号|見積No\.?|№|No\.)\s*[:：]?\s*([A-Za-z0-9\-]*)$/i.exec(tt))) vendor.quoteNo=m[2]||(/^[A-Za-z0-9\-]+$/.test(next.trim())?next.trim():"");
   }
   return {items,subtotal,vendor,found:items.length>0||groups.size>0,ocr:anyOcr};
 }
@@ -704,7 +768,7 @@ async function readLocal(files){
       const pdf=await openPdf(f);
       for(let p=1;p<=pdf.numPages;p++){
         status(`PDFの文字を読んでいます… ${p}/${pdf.numPages}ページ`); rows.push({page:p,items:[]});
-        const page=await pdf.getPage(p); const pr=pageRows(await withTimeout(page.getTextContent(),60000,`PDFの${p}ページ目の文字を読めませんでした。インターネットにつながっているか確認して、もう一度お試しください。`));
+        const page=await pdf.getPage(p); const pr=pageRows(await withTimeout(page.getTextContent(),60000,`PDFの${p}ページ目の文字を読めませんでした。インターネットにつながっているか確認して、もう一度お試しください。`),page.getViewport({scale:1}));
         if(pr.reduce((a,r)=>a+rowText(r).length,0)>=20) rows.push(...pr);
         else { ocrLabel=`${p}/${pdf.numPages}ページ：`; rows.push(...await ocrPdfPage(page)); }   // 文字のないPDF（スキャン）は文字認識
       }
@@ -723,7 +787,7 @@ async function readLocal(files){
   if(!res.found) throw new Error("表の見出し（品名・数量・単価・金額など）が見つかりませんでした。写真の場合は、表全体がまっすぐ・明るく写るように撮り直してください。");
   return res;
 }
-window.__mitsumoriTest={parseRows,linesToRows};
+window.__mitsumoriTest={parseRows,linesToRows,pageRows};
 
 /* ---------- 読み取り（Claude） ---------- */
 function canvasToBlob(cv){ return new Promise(r=>cv.toBlob(r,"image/jpeg",0.9)); }
@@ -746,7 +810,7 @@ async function pdfToImages(file){
     const cv=document.createElement("canvas"); cv.width=Math.round(vp.width); cv.height=Math.round(vp.height);
     const g=cv.getContext("2d"); g.fillStyle="#fff"; g.fillRect(0,0,cv.width,cv.height);
     await page.render({canvasContext:g,viewport:vp}).promise; imgs.push(await canvasToBlob(cv));
-    try{ const t=pageRows(await page.getTextContent()).map(r=>r.items.map(i=>i.s).join(" ")).join("\n"); if(t.trim()) texts.push(`--- ${p}ページ ---\n`+t); }catch(e){}
+    try{ const t=pageRows(await page.getTextContent(),page.getViewport({scale:1})).map(r=>r.items.map(i=>i.s).join(" ")).join("\n"); if(t.trim()) texts.push(`--- ${p}ページ ---\n`+t); }catch(e){}
   }
   return {imgs,text:texts.join("\n")};
 }
