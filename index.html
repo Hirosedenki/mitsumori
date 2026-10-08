@@ -455,7 +455,12 @@ function pdfLib(){
   if(!lib.GlobalWorkerOptions.workerSrc) lib.GlobalWorkerOptions.workerSrc="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
   return lib;
 }
-async function openPdf(file){ return pdfLib().getDocument({data:new Uint8Array(await file.arrayBuffer()),isEvalSupported:false}).promise; }
+const CMAP_URL="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/cmaps/";      // 日本語PDFの文字を読むためのデータ
+function withTimeout(p,ms,msg){ let t; return Promise.race([p,new Promise((_,rej)=>{ t=setTimeout(()=>rej(new Error(msg)),ms); })]).finally(()=>clearTimeout(t)); }
+async function openPdf(file){
+  return withTimeout(pdfLib().getDocument({data:new Uint8Array(await file.arrayBuffer()),isEvalSupported:false,cMapUrl:CMAP_URL,cMapPacked:true}).promise,
+    60000,"PDFを開けませんでした。インターネットにつながっているか確認して、もう一度お試しください。");
+}
 
 /* PDFの文字を「行」にまとめる */
 function pageRows(tc){
@@ -699,7 +704,7 @@ async function readLocal(files){
       const pdf=await openPdf(f);
       for(let p=1;p<=pdf.numPages;p++){
         status(`PDFの文字を読んでいます… ${p}/${pdf.numPages}ページ`); rows.push({page:p,items:[]});
-        const page=await pdf.getPage(p); const pr=pageRows(await page.getTextContent());
+        const page=await pdf.getPage(p); const pr=pageRows(await withTimeout(page.getTextContent(),60000,`PDFの${p}ページ目の文字を読めませんでした。インターネットにつながっているか確認して、もう一度お試しください。`));
         if(pr.reduce((a,r)=>a+rowText(r).length,0)>=20) rows.push(...pr);
         else { ocrLabel=`${p}/${pdf.numPages}ページ：`; rows.push(...await ocrPdfPage(page)); }   // 文字のないPDF（スキャン）は文字認識
       }
@@ -823,6 +828,8 @@ $("btn-read").onclick=async()=>{
       : code==="invalid_json" ? "読み取り結果をうまく受け取れませんでした。もう一度お試しください。"
       : code==="image_rejected" ? "画像を送れませんでした。ページ数を減らすか、別の形式で読み込んでください。"
       : (e&&e.message)||"読み取りに失敗しました。", "err");
+    $("bar-msg").textContent="読み取りができませんでした。左上「1 他社見積りを読み込む」の赤い表示を確認してください。";
+    $("status").scrollIntoView({behavior:"smooth",block:"center"});
   }finally{ aborter=null; $("btn-cancel").hidden=true; updateReadBtn(); }
 };
 
