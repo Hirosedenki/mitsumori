@@ -97,6 +97,11 @@ td.calc{font-family:var(--font-num);text-align:right;white-space:nowrap;padding-
 td.sell{font-weight:700}
 tr.head td{background:var(--field)}
 tr.head td input.name{font-weight:700}
+tr.label td{background:var(--paper);color:var(--muted);font-size:13px;padding:7px 10px}
+tr.label td b{color:var(--ink);font-weight:700}
+tfoot td{font-family:var(--font-num);font-variant-numeric:tabular-nums;padding:6px 8px;border-bottom:1px solid var(--line)}
+tfoot td.lbl{font-family:var(--font-body);font-weight:700;text-align:right}
+tfoot tr.grand td{font-weight:700;font-size:15px;border-top:2px solid var(--ink)}
 .w-name{width:22%}.w-spec{width:18%}.w-qty{width:64px}.w-unit{width:52px}.w-cost{width:96px}.w-cat{width:70px}
 .flag{display:inline-block;font-size:11px;padding:0 6px;border-radius:3px;background:var(--warn-bg);color:var(--warn);margin-left:4px}
 .icon-btn{padding:2px 7px;font-size:12px;color:var(--muted)}
@@ -217,6 +222,7 @@ tr.head td input.name{font-weight:700}
               <th class="num">売値単価</th><th class="num">金額</th><th>備考</th><th></th>
             </tr></thead>
             <tbody id="tbody"></tbody>
+            <tfoot id="tfoot"></tfoot>
           </table>
         </div>
         <div class="tablefoot">
@@ -312,11 +318,21 @@ function totals(){
 
 /* ---------- 表示 ---------- */
 function esc(s){return String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
+function ensureHasuu(){                              // 法定福利費のすぐ前に、必ず「端数値引き」の行を入れる
+  state.items=state.items.filter(i=>!i.auto);
+  let at=-1; state.items.forEach((i,k)=>{ if(i.kind==="item" && /法定福利/.test(i.name)) at=k; });
+  const row=mkItem({kind:"label",name:"端数値引き",auto:true});
+  if(at>=0) state.items.splice(at,0,row); else state.items.push(row);
+}
 function renderTable(){
+  ensureHasuu();
   const tb=$("tbody"); tb.innerHTML="";
   state.items.forEach(it=>{
     const tr=document.createElement("tr"); tr.dataset.id=it.id;
-    if(it.kind==="heading"){
+    if(it.kind==="label"){
+      tr.className="label";
+      tr.innerHTML=`<td></td><td colspan="9"><b>${esc(it.name)}</b>　（項目だけの行。法定福利費の前に自動で入ります）</td>`;
+    }else if(it.kind==="heading"){
       tr.className="head";
       tr.innerHTML=`<td colspan="9"><input class="name" type="text" id="n${it.id}" data-k="name" value="${esc(it.name)}" aria-label="見出し"></td>
         <td><button class="icon-btn" data-del="${it.id}" aria-label="この行を削除">削除</button></td>`;
@@ -348,6 +364,10 @@ function refresh(){
     tr.querySelector('[data-o="amt"]').innerHTML=yen(lineAmt(it))+flag;
   });
   const t=totals();
+  const tax=Math.floor(t.sell*0.1);
+  $("tfoot").innerHTML=`<tr><td></td><td colspan="6" class="lbl">合計</td><td class="num">${yen(t.sell)}</td><td colspan="2"></td></tr>
+    <tr><td></td><td colspan="6" class="lbl">消費税（10%）</td><td class="num">${yen(tax)}</td><td colspan="2"></td></tr>
+    <tr class="grand"><td></td><td colspan="6" class="lbl">総合計</td><td class="num">${yen(t.sell+tax)}</td><td colspan="2"></td></tr>`;
   $("s-cost").textContent=yen(t.cost); $("s-sell").textContent=yen(t.sell);
   $("s-cost-br").textContent=`材料 ${yen(t.costM)}／工事 ${yen(t.costK)}`;
   $("s-sell-br").textContent=`材料 ${yen(t.sellM)}／工事 ${yen(t.sellK)}`;
@@ -930,6 +950,14 @@ async function buildXlsx(){
   const setF=(ref,f,v)=>{ const c=cell(ref); clear(c); add(c,"f",f); add(c,"v",String(v)); };
   const setCached=(ref,v)=>{ const c=cell(ref); let ve=c.getElementsByTagNameNS(NS,"v")[0]; if(!ve) ve=add(c,"v"); ve.textContent=String(v); };
   const styled=(ref,s)=>{ cell(ref).setAttribute("s",String(s)); };
+  const unshare=(ref)=>{                              // 共有数式の先頭セルを書き換える前に、次の行へ引き継ぐ
+    const c=cell(ref), f=c.getElementsByTagNameNS(NS,"f")[0]; if(!f||f.getAttribute("t")!=="shared"||!f.hasAttribute("ref")) return;
+    const m=/^([A-Z]+)(\d+)$/.exec(ref), col=m[1], row=Number(m[2]); const end=f.getAttribute("ref").split(":")[1]; const endRow=Number(end.replace(/[A-Z]+/,""));
+    if(endRow<=row) return;
+    const nf=cell(col+(row+1)).getElementsByTagNameNS(NS,"f")[0]; if(!nf) return;
+    nf.textContent=f.textContent.replace(/([A-Z]+)(\d+)/g,(x,cl,rn)=>Number(rn)===row?cl+(row+1):x);
+    nf.setAttribute("ref",`${col}${row+1}:${end}`);
+  };
 
   // 書式（右上の割合欄用）を追加
   let st=await zip.file("xl/styles.xml").async("string");
@@ -973,7 +1001,7 @@ async function buildXlsx(){
   const fn={down:"ROUNDDOWN",round:"ROUND",up:"ROUNDUP"}[state.set.mode];
   let r=10, costSum=0, sellSum=0;
   for(const it of state.items){
-    if(it.kind==="heading"){ if(String(it.name).trim()){ setStr("A"+r,it.name); r++; } continue; }
+    if(it.kind==="heading"||it.kind==="label"){ if(String(it.name).trim()){ setStr("A"+r,it.name); r++; } continue; }
     if(!String(it.name).trim() && !String(it.spec).trim() && !Number(it.cost)) continue;
     const q=Number(it.qty||0), s=sellOf(it), amt=lineAmt(it,r);
     setStr("A"+r,it.name); setStr("B"+r,it.spec); setNum("C"+r,q); setStr("D"+r,it.unit);
@@ -985,9 +1013,14 @@ async function buildXlsx(){
     setF("P"+r,`${fn}(M${r}*N${r},${digits})`,s);
     costSum+=q*Number(it.cost||0); sellSum+=amt; r++;
   }
-  const last=Math.max(r-1,10);
+  const lastItem=Math.max(r-1,10);
+  // 最後に 合計・消費税・総合計
+  const tax=Math.floor(sellSum*0.1);
+  [["合計",`SUM(I10:I${lastItem})`,sellSum],["消費税",`ROUNDDOWN(I${r}*0.1,0)`,tax],["総合計",`I${r}+I${r+1}`,sellSum+tax]].forEach(([lb,f,v],k)=>{
+    const rr=r+k; setStr("A"+rr,lb); unshare("I"+rr); setF("I"+rr,f,v); });
+  const last=r+2;
   setF("N1","SUMPRODUCT(C10:C5966,M10:M5966)",costSum);
-  setF("N2","SUM(I10:I5966)-N1",sellSum-costSum);
+  setF("N2",`SUM(I10:I${lastItem})-N1`,sellSum-costSum);
 
   let xml=new XMLSerializer().serializeToString(doc);
   if(!xml.startsWith("<?xml")) xml='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'+xml;
