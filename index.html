@@ -270,9 +270,9 @@ let uid = 1;
 const mkItem = o => Object.assign({id:uid++,kind:"item",cat:"材料",name:"",spec:"",qty:1,unit:"",list:null,cost:0,amount:null,remark:""},o);
 
 /* ---------- 区分の自動判定 ---------- */
-const KOJI_RE=/工事|工費|工賃|作業|撤去|取付|取外|取り付|取り外|据付|入線|結線|施工|人工|手間|処分|処理費|運搬|搬入|搬出|諸経費|経費|交通|試験|調整|設置|養生|高所|夜間|足場|管理費|法定福利|出張|労務|技術料|点検|手数料|使用料|許可|申請|手続|立会|分析|調査|損料|段取|警備|安全|仮設/;
+const KOJI_RE=/工事|工費|工賃|作業|撤去|取付|取外|取り付|取り外|据付|入線|結線|施工|人工|手間|処分|処理|破壊|回収|運搬|搬入|搬出|諸経費|経費|交通|試験|調整|設置|養生|高所|夜間|足場|管理費|法定福利|出張|労務|技術料|点検|手数料|使用料|許可|申請|手続|立会|分析|調査|損料|段取|警備|安全|仮設/;
 function headingCat(name){ if(/工事費|工費|労務|施工費|経費|作業費/.test(name)) return "工事"; if(/材料|器具|機器|部材|資材|製品|商品/.test(name)) return "材料"; return null; }
-function guessCat(name,spec,ctx){ if(KOJI_RE.test(name)) return "工事"; return ctx||"材料"; }
+function guessCat(name,spec,ctx){ if(KOJI_RE.test(name)) return "工事"; if(/^[【\[［(（]/.test(name) && KOJI_RE.test(spec||"")) return "工事"; return ctx||"材料"; }
 
 /* ---------- state ---------- */
 const state = {
@@ -396,7 +396,7 @@ function renderVendor(){
 /* ---------- 入力 ---------- */
 const toHalf = s => String(s).replace(/[０-９．，－ー−]/g,c=>({"．":".","，":",","－":"-","ー":"-","−":"-"}[c]||String.fromCharCode(c.charCodeAt(0)-0xFEE0)));
 function parseNum(s){
-  if(s===null||s===undefined) return null; let t=toHalf(String(s)).replace(/[¥￥円,\s]/g,"");
+  if(s===null||s===undefined) return null; let t=toHalf(String(s)).replace(/[¥￥円,\s\\＼]/g,"");
   if(!t) return null; let neg=false;
   if(/^[▲△-]/.test(t)){ neg=true; t=t.replace(/^[▲△-]+/,""); }
   if(/^\(.*\)$/.test(t)){ neg=true; t=t.slice(1,-1); }
@@ -555,8 +555,8 @@ async function ocrPdfPage(page){
 }
 
 /* ---------- 読み取り（Claudeなし）：表の見出しを探して列を決める ---------- */
-const COLKEYS=[["no",["No.","NO.","No","NO","№","番号"]],["name",["品名","名称","品目","工事名","項目","内容","摘要","晶名","品各"]],["spec",["規格","型式","型番","仕様","品番","鍛格","規袼","現格"]],
-  ["qty",["数量","数墓"]],["unit",["単位","呼称"]],["list",["定価"]],["price",["単価","単偏"]],["amount",["金額","全額","金頷","全頷"]],["remark",["備考","備老","摘要","摘　要"]]];
+const COLKEYS=[["no",["No.","NO.","No","NO","№","番号"]],["name",["メーカー・仕様","メーカー仕様","品名","名称","品目","工事名","項目","内容","摘要","晶名","品各"]],["spec",["規格","型式","型番","仕様","品番","鍛格","規袼","現格"]],
+  ["qty",["数量","数墓"]],["unit",["単位","呼称"]],["list",["定価"]],["price",["単価","単偏"]],["amount",["金額","価格","全額","金頷","全頷"]],["remark",["備考","備老","摘要","摘　要"]]];
 const NUMCOL={no:1,qty:1,list:1,price:1,amount:1};
 function findHeader(row){
   const chars=[]; row.items.forEach(it=>{ const cs=[...it.s]; const w=(it.x1-it.x0)/Math.max(1,cs.length); cs.forEach((c,i)=>{ if(!/\s/.test(c)) chars.push({c,x0:it.x0+i*w,x1:it.x0+(i+1)*w}); }); });
@@ -573,7 +573,7 @@ function findHeader(row){
   cols.forEach((c,i)=>{ c.xc=(c.x0+c.x1)/2; c.left = i===0 ? -Infinity : (cols[i-1].x1+c.x0)/2; c.right = i===cols.length-1 ? Infinity : (c.x1+cols[i+1].x0)/2; });
   return cols;
 }
-const NUMLIKE=/^[\s▲△\-−(（]*[\d０-９][\d０-９,，.．\s]*[)）]?$/;
+const NUMLIKE=/^[\s▲△\-−(（¥￥\\＼]*[\d０-９][\d０-９,，.．\s]*[)）]?$/;
 const SIGNONLY=/^[\s▲△\-−]+$/;
 function fixOcrNum(s){
   if(!/^[\s\d０-９.,，．OoIl▲△\-−ー－]+$/.test(s) || !/[\d０-９]/.test(s)) return s;   // 数字らしい文字片だけ直す
@@ -667,14 +667,20 @@ function parseRows(rows){
   // 2回目：行ごとに列へ振り分ける
   let ctx=null, taxSeen=false, subtotal=null, lastSub=null, nextNo=1; const items=[]; let anyOcr=false;
   let pending=[], prevCols=null;                      // 複数行にまたがる品名・規格を一時的にためる
-  const flushPending=()=>{ for(const p of pending){ const last=items[items.length-1];
-      if(!p.name && last && last.kind==="item") last.spec=(last.spec?last.spec+" ":"")+p.spec;          // 規格欄だけの行は前の行の続き
+  let footer=false;                                   // 表の下の「備考・小計・消費税」の部分
+  const flushPending=(nextHasName=true)=>{ for(const p of pending){ const last=items[items.length-1];
+      const close = last && last.kind==="item" && last._y!==undefined && p.y!==undefined && (last._y-p.y)>0 && (last._y-p.y)<=(p.h||10)*1.7;
+      if(!p.name && last && last.kind==="item"){ last.spec=(last.spec?last.spec+" ":"")+p.spec; if(p.y!==undefined) last._y=p.y; }   // 規格欄だけの行は前の行の続き
+      else if(p.name && close && nextHasName && !/^[【\[［■◆●□◇〈＜<]/.test(p.name)){                   // すぐ下に続く品名の折り返し
+        const open=(last.name.match(/[（(]/g)||[]).length>(last.name.match(/[）)]/g)||[]).length;
+        if(open) last.name+=p.name; else last.spec=(last.spec?last.spec+" ":"")+p.name;
+        if(p.spec) last.spec=(last.spec?last.spec+" ":"")+p.spec; last._y=p.y; }
       else { const t=(p.name+" "+p.spec).trim(); ctx=headingCat(t)||ctx; items.push(mkItem({kind:"heading",name:t,grp:p.grp})); } }
     pending=[]; };
   for(const [row,cols] of table){
     if(row.ocr) anyOcr=true;
     if(row.merged) continue;
-    if(prevCols && prevCols!==cols) flushPending(); prevCols=cols; const grp=gidx.get(cols);
+    if(prevCols && prevCols!==cols){ flushPending(); footer=false; } prevCols=cols; const grp=gidx.get(cols);
     const txt=rowText(row);
     const recIt={}; row.items.forEach(it=>{ const c=colOf(cols,it,row.grid); (recIt[c.key]=recIt[c.key]||[]).push(it); });
     { const nc=cols.find(c=>c.key==="name"); if(nc && nc.splitX!==undefined && recIt.name){ const mv=recIt.name.filter(it=>it.x0>=nc.splitX); if(mv.length){ recIt.name=recIt.name.filter(it=>it.x0<nc.splitX); recIt.spec=(recIt.spec||[]).concat(mv); } } }
@@ -689,16 +695,19 @@ function parseRows(rows){
         const sp = i && (row.grid || (row.ocr ? (gap>hh*1.6 || (asciiEdge && gap>hh*0.4)) : gap>hh*0.15));
         out+=(sp?" ":"")+cur; });
       return out.replace(/\s+/g," ").trim(); };
-    const JN=k=>{ let t=(recIt[k]||[]).map(it=>it.s.trim()).join("");   // 数字の欄：文字認識で▲が「全」「人」「4^」などになった分を落とす
+    const JN=k=>{ let t=(recIt[k]||[]).map(it=>it.s.trim()).join("").replace(/^[¥￥\\＼]+/,"").replace(/^-[¥￥\\＼]/,"-");   // 数字の欄：文字認識で▲が「全」「人」「4^」などになった分を落とす
       if(row.ocr) t=t.replace(/^4[^\d.,\s]+(?=\d)/,"▲").replace(/^[^\d▲△\-−]+(?=\d)/,"▲");
       return t; };
     let name=J("name"), spec=J("spec"), unit=J("unit"), remark=J("remark");
-    if(/費税|税込|消費/.test(txt)){ taxSeen=true; continue; }
-    if(/(小計|合計|総計|計$)/.test(name.replace(/\s/g,""))||/^(小計|合計|総額|総計)/.test(txt)){
+    if(/費税|税込|消費/.test(txt)){ taxSeen=true; footer=true; continue; }
+    const sumColon=/(値引き?|小計|合計|総額|総計)[^:：]{0,10}[:：]/.test(txt);
+    if(sumColon || /^備\s*考$/.test(name.replace(/\s/g,""))) { flushPending(); footer=true; }
+    if(/(小計|合計|総計|計$)/.test(name.replace(/\s/g,""))||/^(小計|合計|総額|総計)/.test(txt)||(footer&&/(小計|合計|総額|総計)/.test(txt))){
       const a=parseNum(JN("amount"))??parseNum(((recIt.amount||recIt.price||[]).slice(-1)[0]||{}).s);
       if(a!==null && !taxSeen && !/税込/.test(txt)){ if(/合計|総額|総計/.test(txt)) subtotal=a; else lastSub=a; }
       continue;
     }
+    if(footer) continue;                                                            // 備考などは明細に入れない
     const noTxt=J("no"), noNum=parseNum(noTxt);
     if(cols.some(c=>c.key==="no")){
       name=name.replace(/^\d{1,4}\s+/,"");
@@ -717,13 +726,13 @@ function parseRows(rows){
       const text=(name+" "+spec).trim(); if(!text) continue;
       if(/^(№|No\.?)\s*\d+$|内\s*訳|明\s*細\s*書|見\s*積\s*書|^頁|ページ/.test(text.replace(/\s+/g," ").trim())) continue;   // ページ番号や表題
       if(noNum!==null || /^[【\[［■◆●□◇〈＜<]/.test(text)){ flushPending(); ctx=headingCat(text)||ctx; items.push(mkItem({kind:"heading",name:text,grp})); continue; }
-      pending.push({name,spec,grp}); continue;                                       // 数字のない行は、次の数字の行とまとめる
+      pending.push({name,spec,grp,y:row.y,h:(row.items[0]&&row.items[0].h)||10}); continue;   // 数字のない行は、次の数字の行とまとめる
     }
     if(!name && !spec){
       if(!pending.length) continue;
       name=pending.map(p=>p.name).filter(Boolean).join(" "); spec=pending.map(p=>p.spec).filter(Boolean).join(" "); pending=[];
       if(!name){ name=spec; spec=""; }
-    } else flushPending();
+    } else flushPending(!!name);
     if(/^[(（][^)）]*[)）]$/.test(name) && spec){ name=spec; spec=""; }              // 「(日中3日間工程)」のような添え書き
     if(DISC.test(name)){ if(price>0) price=-price; if(amount>0) amount=-amount; }   // 値引きはマイナス
     const base=subtotal??lastSub, big=amount??price;
@@ -733,7 +742,9 @@ function parseRows(rows){
     if(cost===null && amount!==null){ if(q===null||q===0){ q=1; if(!unit) unit="式"; } cost=Math.round(amount/q*100)/100; }
     if(q===null) q=1;
     if(/\s/.test(unit.trim())){ const u=unit.trim().split(/\s+/); unit=u.pop(); spec=(spec?spec+" ":"")+u.join(" "); }   // 単位の欄に入った規格の文字
-    items.push(mkItem({cat:guessCat(name||spec,spec,ctx),name:name||spec,spec:name?spec:"",qty:q,unit,list,cost:cost??0,amount,remark,ocr:!!row.ocr,grp}));
+    const prevIt=[...items].reverse().find(i=>i.kind==="item");
+    const cat0 = DISC.test(name||spec) && prevIt ? prevIt.cat : guessCat(name||spec,spec,ctx);         // 値引きは直前の行と同じ区分
+    items.push(mkItem({cat:cat0,name:name||spec,spec:name?spec:"",qty:q,unit,list,cost:cost??0,amount,remark,ocr:!!row.ocr,grp,_y:row.y}));
   }
   flushPending();
   if(subtotal===null) subtotal=lastSub;
@@ -766,7 +777,7 @@ function parseRows(rows){
   // 見積元などの情報（表より上の部分から、まとまりごとに）
   const vendor={company:"",person:"",date:"",quoteNo:"",title:"",site:""};
   const CO=/(株式会社|有限会社|合同会社|㈱|㈲|（株）|\(株\))/;
-  const segs=[]; pre.forEach(r=>{ const sg=segments(r); sg.forEach((x,i)=>segs.push({t:x,next:sg[i+1]||""})); });
+  const segs=[]; pre.forEach(r=>{ const sg=segments(r).map(x=>x.replace(/^[:：]\s*/,"").trim()).filter(Boolean); sg.forEach((x,i)=>segs.push({t:x,next:sg[i+1]||""})); });
   for(const {t:t0,next} of segs){
     const t=t0.replace(/(\S)\s(?=\S)/g,(m,a)=>/[A-Za-z0-9]/.test(a)?m:a);   // 文字認識で入った余分な空白を除く
     const tt=toHalf(t), val=(m,i)=>(m[i]||"").replace(/^[\s:：]+/,"").trim()||next.trim();
@@ -774,8 +785,8 @@ function parseRows(rows){
     if(!vendor.company && CO.test(tt.replace(/\s/g,"")) && !/御中|様|殿|廣瀬電気/.test(tt) && !/御中|様|殿/.test(next) && tt.length<=40) vendor.company=t.replace(/^(見積元|会社名)[:：]?/,"").trim();
     if(!vendor.date && (m=/(令和|R)\s*(\d+|元)\s*年\s*(\d+)\s*月\s*(\d+)\s*日/.exec(tt))){ const y=m[2]==="元"?1:Number(m[2]); vendor.date=`${2018+y}/${Number(m[3])}/${Number(m[4])}`; }
     else if(!vendor.date && (m=/(20\d\d)\s*[年\/.\-]\s*(\d{1,2})\s*[月\/.\-]\s*(\d{1,2})/.exec(tt))) vendor.date=`${m[1]}/${Number(m[2])}/${Number(m[3])}`;
-    if(!vendor.title && (m=/^(件\s*名|工\s*事\s*名|御?見積件名)\s*[:：]?(.*)$/.exec(tt))) vendor.title=val(m,2);
-    if(!vendor.site && (m=/^(工事場所|施工場所|現場住所|現\s*場|場\s*所)\s*[:：]?(.*)$/.exec(tt))) vendor.site=val(m,2);
+    if(!vendor.title && (m=/^(件\s*名|工\s*事\s*名|物\s*件\s*名|現\s*場\s*名|御?見積件名)\s*[:：]?(.*)$/.exec(tt))) vendor.title=val(m,2);
+    if(!vendor.site && !/担当/.test(tt) && (m=/^(工事場所|施工場所|現場住所|物件住所|工事住所|納入場所|現\s*場|場\s*所)\s*[:：]?(.*)$/.exec(tt))) vendor.site=val(m,2);
     if(!vendor.person && !/様|殿/.test(tt+next) && (m=/^(担当者名?|ご?担当)\s*[:：]?\s*(.*)$/.exec(tt))) vendor.person=val(m,2);
     if(!vendor.quoteNo && (m=/^(見積番号|見積No\.?|№|No\.)\s*[:：]?\s*([A-Za-z0-9\-]*)$/i.exec(tt))) vendor.quoteNo=m[2]||(/^[A-Za-z0-9\-]+$/.test(next.trim())?next.trim():"");
   }
